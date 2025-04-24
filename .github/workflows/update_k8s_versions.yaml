@@ -38,3 +38,4 @@ jobs:
           branch: update-k8s-test-versions
           base: main
           delete-branch: true
+          token: ${{ secrets.testworkflow }}
