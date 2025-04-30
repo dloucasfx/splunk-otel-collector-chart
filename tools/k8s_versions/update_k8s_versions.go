@@ -4,17 +4,28 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+)
+
+var debug bool
+
+const (
+	EndOfLifeURL string = "https://endoflife.date/api/kubernetes.json"
+	DockerHubURL string = "https://hub.docker.com/v2/repositories/kindest/node/tags?page_size=1&page=1&ordering=last_updated&name="
+	MiniKubeURL  string = "https://raw.githubusercontent.com/kubernetes/minikube/master/pkg/minikube/constants/constants_kubernetes_versions.go"
 )
 
 type KubernetesVersion struct {
@@ -28,152 +39,99 @@ type DockerImage struct {
 	Count int `json:"count"`
 }
 
-func fetchKubernetesVersions(url string) ([]KubernetesVersion, error) {
-	resp, err := http.Get(url)
+// getSupportedKubernetesVersions returns only the supported Kubernetes versions
+// by checking the EOL date of the collected versions.
+func getSupportedKubernetesVersions() ([]KubernetesVersion, error) {
+	body, err := getRequest(EndOfLifeURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed getting k8s versions: %w", err)
+		return nil, fmt.Errorf("failed to get k8s versions: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	var kubernetesVersions []KubernetesVersion
+	var kubernetesVersions, supportedKubernetesVersions []KubernetesVersion
 	if err := json.Unmarshal(body, &kubernetesVersions); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
 	}
 
-	return kubernetesVersions, nil
-}
-
-// yaml parsing does not preserve the original format, mainly blank lines.
-// This function reads the raw yaml file, locate and update the k8s-version block
-func updateK8sVersion(filePath string, kubernetesVersions []KubernetesVersion) error {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
-	}
-	defer file.Close()
-
-	var output []string
-	var k8sVersionBlock []string
-	var inK8sVersionBlock bool
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-
-		// Locate the k8s-version block needed to update
-		if strings.HasPrefix(trimmed, "k8s-version:") || strings.HasPrefix(trimmed, "kubernetes_version:") {
-			inK8sVersionBlock = true
-			output = append(output, line)
-			continue
-		}
-		// if we found the k8s version array, extract all versions and pass them to updateVersionsBlock
-		if inK8sVersionBlock {
-			if strings.HasPrefix(trimmed, "-") || strings.HasPrefix(trimmed, "#") {
-				k8sVersionBlock = append(k8sVersionBlock, line)
-				continue
-			} else if trimmed == "" || !strings.HasPrefix(trimmed, "-") {
-				updatedVerBlock, err := updateVersionsBlock(kubernetesVersions, k8sVersionBlock)
-				if err != nil {
-					return err
-				}
-				output = append(output, append(updatedVerBlock, line)...)
-				inK8sVersionBlock = false
-				continue
-			}
-		}
-		output = append(output, line)
-	}
-
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
-	}
-
-	if err := os.WriteFile(filePath, []byte(strings.Join(output, "\n")+"\n"), 0644); err != nil {
-		return fmt.Errorf("failed to write updated file: %w", err)
-	}
-	return nil
-}
-
-func updateVersionsBlock(versions []KubernetesVersion, versionBlock []string) ([]string, error) {
-	var output []string
 	now := time.Now()
-	const layout = "2006-01-02"
-	versionRE := regexp.MustCompile("\\d+.\\d+.\\d+")
-
-	for _, version := range versions {
-		eolDate, err := time.Parse(layout, version.EOLDate)
+	for _, kubernetesVersion := range kubernetesVersions {
+		eolDate, err := time.Parse("2006-01-02", kubernetesVersion.EOLDate)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing date: %w", err)
 		}
+		if eolDate.After(now) {
+			supportedKubernetesVersions = append(supportedKubernetesVersions, kubernetesVersion)
+		} else {
+			logDebug("Skipping version %s, EOL date %s", kubernetesVersion.Cycle, kubernetesVersion.EOLDate)
+		}
+	}
+	return supportedKubernetesVersions, nil
+}
 
-		for i, line := range versionBlock {
-			trimmed := strings.TrimSpace(line)
-			tag := ""
-			if strings.HasPrefix(trimmed, fmt.Sprintf("- v%s", version.Cycle)) {
-				if eolDate.After(now) {
-					tag, err = getAvailableKindImage(version.Latest)
-					if err != nil {
-						return nil, fmt.Errorf("failed to get available kind image: %w", err)
-					}
-					line = versionRE.ReplaceAllString(line, tag)
-					output = append(output, line)
-				}
+func getLatestSupportedMinikubeVersions(k8sVersions []KubernetesVersion) ([]string, error) {
+	body, err := getRequest(MiniKubeURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get minikube versions: %w", err)
+	}
+
+	// Extract the slice using a regular expression
+	re := regexp.MustCompile(`ValidKubernetesVersions = \[\]string{([^}]*)}`)
+	matches := re.FindStringSubmatch(string(body))
+	if len(matches) < 2 {
+		return nil, fmt.Errorf("minikube, failed to find the Kubernetes versions slice")
+	}
+
+	// Parse and cleanup the slice values
+	versions := strings.Split(strings.ReplaceAll(strings.ReplaceAll(matches[1], "\n", ""), `"`, ""), ",")
+
+	logDebug("Found the following minikube versions: %s", versions)
+
+	var latestMinikubeVersions []string
+	// the minikube version slice is sorted, break when first cycle match is found
+	for _, k8sVersion := range k8sVersions {
+		for _, version := range versions {
+			if strings.Contains(version, k8sVersion.Cycle) {
+				latestMinikubeVersions = append(latestMinikubeVersions, strings.TrimSpace(version))
 				break
-			} else if i == len(versionBlock)-1 && eolDate.After(now) {
-				// Add the new version at the end of the list
-				tag, err = getAvailableKindImage(version.Latest)
-				if err != nil {
-					return nil, fmt.Errorf("failed to get available kind image: %w", err)
-				}
-				output = append(output, fmt.Sprintf("%s- v%s # EOL %s", strings.Repeat(" ", len(line)-len(trimmed)), tag, version.EOLDate))
 			}
 		}
 	}
-	return output, nil
+
+	return latestMinikubeVersions, nil
 }
 
-func getAvailableKindImage(tag string) (string, error) {
-	for {
-		exists, err := imageTagExists(tag)
-		if err != nil {
-			return "", fmt.Errorf("failed to check image tag existence: %w", err)
-		}
-		if exists {
-			return tag, nil
-		}
-
-		tag, err = decrementMinorMinorVersion(tag)
-		if err != nil {
-			return "", fmt.Errorf("failed to decrement version: %w", err)
+// getLatestSupportedKindImages iterates through the K8s supported versions and find the latest kind
+// tag that supports that version
+func getLatestSupportedKindImages(k8sVersions []KubernetesVersion) ([]string, error) {
+	var supportedKindVersions []string
+	for _, k8sVersion := range k8sVersions {
+		tag := k8sVersion.Latest
+		for {
+			exists, err := imageTagExists(tag)
+			if err != nil {
+				return supportedKindVersions, fmt.Errorf("failed to check image tag existence: %w", err)
+			}
+			if exists {
+				supportedKindVersions = append(supportedKindVersions, "v"+tag)
+				break
+			}
+			tag, err = decrementMinorMinorVersion(tag)
+			if err != nil {
+				// It's possible that kind still does not have a tag for new versions, break the loop and
+				// process other k8s versions
+				if strings.Contains(err.Error(), "minor version cannot be decremented below 0") {
+					logDebug("No kind image found for k8s version %s", k8sVersion.Cycle)
+					break
+				}
+				return supportedKindVersions, fmt.Errorf("failed to decrement k8sVersion: %w", err)
+			}
 		}
 	}
+	return supportedKindVersions, nil
 }
 
 func imageTagExists(tag string) (bool, error) {
-	url := "https://hub.docker.com/v2/repositories/kindest/node/tags?page_size=1&page=1&ordering=last_updated&name="
-	resp, err := http.Get(url + tag)
+	body, err := getRequest(DockerHubURL + tag)
 	if err != nil {
-		return false, fmt.Errorf("failed getting k8s versions: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("failed to read response body: %w", err)
+		return false, fmt.Errorf("failed to get image tag: %w", err)
 	}
 
 	var kindImage DockerImage
@@ -206,33 +164,123 @@ func decrementMinorMinorVersion(version string) (string, error) {
 	return strings.Join(parts, "."), nil
 }
 
-func main() {
-	url := "https://endoflife.date/api/kubernetes.json"
-	k8sVersions, err := fetchKubernetesVersions(url)
+func updateMatrixFile(filePath string, kindVersions []string, minikubeVersions []string) error {
+	content, err := os.ReadFile(filePath)
 	if err != nil {
-		fmt.Println("Failed to get k8s versions:", err)
-		os.Exit(1) // Exit with code 1 on failure
+		return fmt.Errorf("failed to read file: %w", err)
 	}
 
-	filesToUpdate := []string{".github/workflows/functional_test.yaml", ".github/workflows/functional_test_v2.yaml"}
-	currentDir, err := os.Getwd()
-	if err != nil {
-		fmt.Println("Failed to get current directory:", err)
-		os.Exit(1)
+	var testMatrix map[string]map[string][]string
+	if err := json.Unmarshal(content, &testMatrix); err != nil {
+		return fmt.Errorf("failed to unmarshal JSON: %w", err)
 	}
 
-	var partialFailure bool
-	for _, filePath := range filesToUpdate {
-		filePath = filepath.Join(currentDir, filepath.Clean(filePath))
-		if err := updateK8sVersion(filePath, k8sVersions); err != nil {
-			fmt.Println("Error:", err)
-			partialFailure = true
+	for _, value := range testMatrix {
+		if len(kindVersions) > 0 && value["k8s-kind-version"] != nil {
+			value["k8s-kind-version"] = kindVersions
+		} else if len(minikubeVersions) > 0 && value["k8s-minikube-version"] != nil {
+			value["k8s-minikube-version"] = minikubeVersions
 		}
 	}
+	// Marshal the updated test matrix back to JSON
+	updatedContent, err := json.MarshalIndent(testMatrix, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated JSON: %w", err)
+	}
 
-	if partialFailure {
+	if err := os.WriteFile(filePath, updatedContent, 0644); err != nil {
+		return fmt.Errorf("failed to write updated file: %w", err)
+	}
+	return nil
+}
+
+func sortVersions(versions []string) {
+	sort.Slice(versions, func(i, j int) bool {
+		vi := strings.Split(versions[i][1:], ".") // Remove "v" and split by "."
+		vj := strings.Split(versions[j][1:], ".")
+
+		for k := 0; k < len(vi) && k < len(vj); k++ {
+			if vi[k] != vj[k] {
+				return vi[k] > vj[k] // Sort in descending order
+			}
+		}
+		return len(vi) > len(vj)
+	})
+}
+
+func getRequest(url string) ([]byte, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch URL: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	return body, nil
+}
+
+func logDebug(format string, v ...interface{}) {
+	if debug {
+		log.Printf(format, v...)
+	}
+}
+
+func main() {
+	// setup logging
+	flag.BoolVar(&debug, "debug", false, "Enable debug logging")
+	flag.Parse()
+	log.SetOutput(os.Stdout)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	k8sVersions, err := getSupportedKubernetesVersions()
+	if err != nil || len(k8sVersions) == 0 {
+		log.Println("Failed to get k8s versions: ", err)
+		os.Exit(1) // Exit with code 1 on failure
+	}
+	logDebug("Found supported k8s versions %v", k8sVersions)
+
+	var errs error
+
+	kindVersions, err := getLatestSupportedKindImages(k8sVersions)
+	if err != nil {
+		errs = errors.Join(errs, fmt.Errorf("failed to get kind images: %w", err))
+	}
+	if len(kindVersions) > 0 {
+		sortVersions(kindVersions)
+		logDebug("Found supported kind images: %v", kindVersions)
+	}
+
+	minikubeVersions, err := getLatestSupportedMinikubeVersions(k8sVersions)
+	if err != nil {
+		errs = errors.Join(errs, fmt.Errorf("failed to get minikube versions: %w", err))
+	}
+	if len(minikubeVersions) > 0 {
+		logDebug("Found supported minikube versions: %v", minikubeVersions)
+	}
+
+	if len(kindVersions) == 0 && len(minikubeVersions) == 0 || errs != nil {
+		log.Println("No supported versions found or errors occurred: ", errs)
 		os.Exit(2)
 	}
 
+	path := ".github/workflows/configs/test-matrix.json"
+	currentDir, err := os.Getwd()
+	if err != nil {
+		log.Println("Failed to get current directory: ", err)
+		os.Exit(1)
+	}
+	path = filepath.Join(currentDir, filepath.Clean(path))
+	err = updateMatrixFile(path, kindVersions, minikubeVersions)
+	if err != nil {
+		log.Println("Failed to update matrix file: ", err)
+		os.Exit(1)
+	}
 	os.Exit(0)
 }
