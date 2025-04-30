@@ -5,10 +5,17 @@ on:
     # Run every Monday at noon.
     - cron: "0 12 * * 1"
   workflow_dispatch:
+    inputs:
+      DEBUG_ARGUMENT:
+        description: 'Enable debug by setting -debug'
+        required: false
+        default: '-debug=false'
 
 jobs:
   check_and_update:
     runs-on: ubuntu-latest
+    env:
+      DEBUG: ${{ github.event.inputs.DEBUG_ARGUMENT }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -17,7 +24,7 @@ jobs:
         id: check_for_update
         run: |
           echo "Checking for new k8s versions"
-          make update-k8s-test-versions
+          make update-k8s-test-versions DEBUG=$DEBUG
 
       - name: check for changes
         id: git-check

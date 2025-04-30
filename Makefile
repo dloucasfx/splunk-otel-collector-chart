@@ -223,5 +223,5 @@ update-operator-crds: ## Update CRDs in the opentelemetry-operator-crds subchart
 	ci_scripts/update-crds.sh
 
 .PHONY: update-k8s-test-versions
-update-k8s-test-versions: ## Update K8S cluster versions used for testing
-	go run ./tools/k8s_versions/update_k8s_versions.go
+update-k8s-test-versions: ## Update K8S cluster versions used for testing. Set DEBUG=-debug to enable debug logs
+	go run ./tools/k8s_versions/update_k8s_versions.go $(DEBUG)
