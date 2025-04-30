@@ -270,7 +270,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	path := ".github/workflows/configs/test-matrix.json"
+	path := "tools/k8s_versions/test-matrix.json"
 	currentDir, err := os.Getwd()
 	if err != nil {
 		log.Println("Failed to get current directory: ", err)

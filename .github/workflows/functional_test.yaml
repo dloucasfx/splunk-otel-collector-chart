@@ -20,7 +20,7 @@ jobs:
         id: test_matrix
         run: |
           echo "Getting test matrix"
-          matrix=`cat .github/workflows/configs/test-matrix.json | jq '.functional_test' | jq -r 'tostring' | tr -d '\n'`
+          matrix=`cat tools/k8s_versions/test-matrix.json | jq '.functional_test' | jq -r 'tostring' | tr -d '\n'`
           echo "matrix=${matrix}" >> $GITHUB_OUTPUT
     outputs:
       matrix: ${{ steps.test_matrix.outputs.matrix }}
