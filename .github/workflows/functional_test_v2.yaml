@@ -31,7 +31,7 @@ jobs:
         id: test_matrix
         run: |
           echo "Getting test matrix"
-          matrix=`cat .github/workflows/configs/test-matrix.json | jq '.functional_test_kind' | jq -r 'tostring' | tr -d '\n'`
+          matrix=`cat .github/workflows/configs/test-matrix.json | jq '.functional_test_v2' | jq -r 'tostring' | tr -d '\n'`
           echo "matrix=${matrix}" >> $GITHUB_OUTPUT
     outputs:
       matrix: ${{ steps.test_matrix.outputs.matrix }}
@@ -57,8 +57,8 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@v1.12.0
         with:
-          node_image: kindest/node:${{ matrix.k8s-version }}
-          kubectl_version: ${{ matrix.k8s-version }}
+          node_image: kindest/node:${{ matrix.k8s-kind-version }}
+          kubectl_version: ${{ matrix.k8s-kind-version }}
           cluster_name: kind
           config: ./.github/workflows/configs/kind-config.yaml
       - name: Fix kubelet TLS server certificates
@@ -70,7 +70,7 @@ jobs:
       - name: run functional tests
         id: run-functional-tests
         env:
-          K8S_VERSION: ${{ matrix.k8s-version }}
+          K8S_VERSION: ${{ matrix.k8s-kind-version }}
         run: |
           TEARDOWN_BEFORE_SETUP=true UPDATE_EXPECTED_RESULTS=${{ env.UPLOAD_UPDATED_EXPECTED_RESULTS }} SUITE=${{ matrix.test-job }} make functionaltest
       - name: Collect Kubernetes Cluster debug info on failure
@@ -84,14 +84,14 @@ jobs:
         if: always() && (steps.run-functional-tests.outcome == 'failure' || env.UPLOAD_KUBERNETES_DEBUG_INFO == 'true')
         uses: actions/upload-artifact@v4
         with:
-          name: k8s-debug-info-${{ matrix.test-job }}-${{ matrix.k8s-version }}
+          name: k8s-debug-info-${{ matrix.test-job }}-${{ matrix.k8s-kind-version }}
           path: tools/splunk_kubernetes_debug_info_*
           retention-days: 5
       - name: Upload test results
         if: always() && env.UPLOAD_UPDATED_EXPECTED_RESULTS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: functional_tests-${{ matrix.test-job }}-${{ matrix.k8s-version }}
+          name: functional_tests-${{ matrix.test-job }}-${{ matrix.k8s-kind-version }}
           path: functional_tests/results
           retention-days: 5
 

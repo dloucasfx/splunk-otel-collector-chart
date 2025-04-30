@@ -1,6 +1,24 @@
 {
-  "functional_test_kind": {
-    "k8s-version": [
+  "functional_test": {
+    "container_runtime": [
+      "docker",
+      "containerd",
+      "crio"
+    ],
+    "k8s-minikube-version": [
+      "v1.30.0",
+      "v1.29.4",
+      "v1.28.9",
+      "v1.27.13",
+      "v1.26.15"
+    ],
+    "splunk_version": [
+      "9.3.0",
+      "8.2.9"
+    ]
+  },
+  "functional_test_v2": {
+    "k8s-kind-version": [
       "v1.30.0",
       "v1.28.0",
       "v1.27.3",
@@ -16,26 +34,8 @@
       "discovery"
     ]
   },
-  "splunk_functional_test_minikube": {
-    "k8s-version": [
-      "v1.30.0",
-      "v1.29.4",
-      "v1.28.9",
-      "v1.27.13",
-      "v1.26.15"
-    ],
-    "container_runtime": [
-      "docker",
-      "containerd",
-      "crio"
-    ],
-    "splunk_version": [
-      "9.3.0",
-      "8.2.9"
-    ]
-  },
-  "sck_migration_kind": {
-    "k8s-version": [
+  "migration_tests": {
+    "k8s-kind-version": [
       "v1.29.0",
       "v1.28.0",
       "v1.27.3",

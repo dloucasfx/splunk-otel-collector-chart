@@ -20,13 +20,13 @@ jobs:
         id: test_matrix
         run: |
           echo "Getting test matrix"
-          matrix=`cat .github/workflows/configs/test-matrix.json | jq '.functional_test_kind' | jq -r 'tostring' | tr -d '\n'`
+          matrix=`cat .github/workflows/configs/test-matrix.json | jq '.functional_test' | jq -r 'tostring' | tr -d '\n'`
           echo "matrix=${matrix}" >> $GITHUB_OUTPUT
     outputs:
       matrix: ${{ steps.test_matrix.outputs.matrix }}
 
   functional-test:
-    name: K8s ${{ matrix.k8s-version }} ${{ matrix.container_runtime }}, Splunk ${{ matrix.splunk_version }}
+    name: K8s ${{ matrix.k8s-minikube-version }} ${{ matrix.container_runtime }}, Splunk ${{ matrix.splunk_version }}
     runs-on: ubuntu-latest
     needs: get-test-matrix
     strategy:
@@ -40,7 +40,7 @@ jobs:
       CI_INDEX_EVENTS: ci_events
       CI_INDEX_METRICS: ci_metrics
       CONTAINER_RUNTIME: ${{ matrix.container_runtime }}
-      KUBERNETES_VERSION: ${{ matrix.k8s-version }}
+      KUBERNETES_VERSION: ${{ matrix.k8s-minikube-version }}
       SPLUNK_VERSION: ${{ matrix.splunk_version }}
       MINIKUBE_VERSION: latest
       KUBECONFIG: /tmp/kube-config-splunk-otel-collector-chart-functional-testing

@@ -21,7 +21,7 @@ jobs:
         id: test_matrix
         run: |
           echo "Getting test matrix"
-          matrix=`cat .github/workflows/configs/test-matrix.json | jq '.sck_migration_kind' | jq -r 'tostring' | tr -d '\n'`
+          matrix=`cat .github/workflows/configs/test-matrix.json | jq '.migration_tests' | jq -r 'tostring' | tr -d '\n'`
           echo "matrix=${matrix}" >> $GITHUB_OUTPUT
     outputs:
       matrix: ${{ steps.test_matrix.outputs.matrix }}
@@ -52,8 +52,8 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@v1.12.0
         with:
-          node_image: kindest/node:${{ matrix.k8s-version }}
-          kubectl_version: ${{ matrix.k8s-version }}
+          node_image: kindest/node:${{ matrix.k8s-kind-version }}
+          kubectl_version: ${{ matrix.k8s-kind-version }}
           cluster_name: kind
           config: ./.github/workflows/configs/kind-config.yaml
       - name: Fix kubelet TLS server certificates
